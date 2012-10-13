@@ -30,11 +30,14 @@ import string
 from tempfile import mkstemp
 from shutil import move
 from os import remove, close
+import pwd
+from pwd import getpwnam
 import shutil
 import re
 import getopt
 from string import Template
 import platform
+import xattr
 
 class ManageHosts :
 	"""###Manage Hosts####
@@ -62,8 +65,20 @@ This application facilitates the creation of hosts through a few simple steps.
 
 	initMarkupVhosts = ""
 	endMarkupVhosts = ""
+	originalUser = {}
 
 	def __init__(self) :
+		if os.getenv("SUDO_USER") :
+			self.originalUser = getpwnam(os.getenv("SUDO_USER"))
+		else :
+			self.originalUser = pwd.getpwuid(os.getuid())
+
+		#Set sudo	
+		euid = os.geteuid()
+		if euid != 0:
+		    args = ['sudo', sys.executable] + sys.argv + [os.environ]
+		    os.execlpe('sudo', *args)
+
 		self.__setDefaultsSystem()
 		self.__platform = "macos" if platform.system().lower() == "darwin" else platform.system().lower()
 
@@ -102,13 +117,10 @@ This application facilitates the creation of hosts through a few simple steps.
 		self.envir = self.conf[self.__platform]
 		self.envir['pathseparator'] = "/" if self.__platform != "windows" else "\\"
 
-		self.initMarkupVhosts = '<VirtualHost %s:%s>' % (self.envir["ipdomain"], self.envir["domainport"])	
+		self.initMarkupVhosts = '<VirtualHost *:80>'
 		self.endMarkupVhosts = '</VirtualHost>'	
 		
 	def start(self) :
-		if not os.access(self.envir["vhosts"], os.W_OK) and not os.access(self.envir["hosts"], os.W_OK) :
-			print "Among the session with permissions to write files in %s and %s" % (self.envir["vhosts"], self.envir["hosts"])
-			os._exit(1)
 		self.selectOption()
 
 	def selectOption(self, action = "init", args = "") :
@@ -191,7 +203,8 @@ This application facilitates the creation of hosts through a few simple steps.
 		if not os.path.isdir(self.pathDomain) : 
 			createDir = raw_input("Dir ('" + self.pathDomain + "') doesn't exists.. create now (Y/n) ? : ").lower()
 			if createDir == "y" or createDir == "" : 
-				os.makedirs(self.pathDomain)
+				os.makedirs(self.pathDomain, 0755)
+				os.chown(self.pathDomain, self.originalUser[2], self.originalUser[3])
 			elif createDir == "n" : 
 				print "please, create dir later!"		
 
@@ -218,10 +231,14 @@ This application facilitates the creation of hosts through a few simple steps.
 
 		hostsConfig = '''\n{0}\t{1}\n{0}\t{2}''' . format(self.envir["ipdomain"], self.domain, alias)
 
+		#if not os.access(self.envir["vhosts"], os.W_OK) and not os.access(self.envir["hosts"], os.W_OK) :
+			#print "Among the session with permissions to write files in %s and %s" % (self.envir["vhosts"], self.envir["hosts"])
+			#os._exit(1)
+
 		hostsFile = open(self.envir["hosts"], "a")
 		hostsFile.write(hostsConfig)
-		hostsFile.close()
-
+		hostsFile.close()	
+			
 		self.reloadApache()
 
 		print "Done!"
@@ -289,6 +306,13 @@ This application facilitates the creation of hosts through a few simple steps.
 		temp = []
 		tempHost = []
 		originalHost = open(file, 'r')
+		xattrHost = xattr.xattr(file)
+
+		os.chmod(abs_path, 0644)
+		os.chown(abs_path, self.originalUser[2], self.originalUser[3])
+
+		for name in xattrHost : 
+			xattr.setxattr(abs_path, name, xattrHost.get(name))
 
 		for line in originalHost:
 
@@ -367,6 +391,9 @@ This application facilitates the creation of hosts through a few simple steps.
 
 		#Move new file
 		move(abs_path, file)
+
+		os.chmod(file, 0644)
+
 		return foundDomain		
 
 	def __removeDir(self) :
@@ -486,8 +513,6 @@ $HTDOCS - {5}
 		self.defaultssystem["macos"]["defaulthtdocs"] = r"/Applications/XAMPP/xamppfiles/htdocs"
 
 	def __getUsername(self) :
-		import os
-		import pwd
 
 		return os.getenv("SUDO_USER") or pwd.getpwuid(os.getuid())[0]
     			
