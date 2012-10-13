@@ -30,14 +30,11 @@ import string
 from tempfile import mkstemp
 from shutil import move
 from os import remove, close
-import pwd
-from pwd import getpwnam
 import shutil
 import re
 import getopt
 from string import Template
 import platform
-import xattr
 
 class ManageHosts :
 	"""###Manage Hosts####
@@ -68,20 +65,25 @@ This application facilitates the creation of hosts through a few simple steps.
 	originalUser = {}
 
 	def __init__(self) :
-		if os.getenv("SUDO_USER") :
-			self.originalUser = getpwnam(os.getenv("SUDO_USER"))
-		else :
-			self.originalUser = pwd.getpwuid(os.getuid())
-
-		#Set sudo	
-		euid = os.geteuid()
-		if euid != 0:
-		    args = ['sudo', sys.executable] + sys.argv + [os.environ]
-		    os.execlpe('sudo', *args)
-
-		self.__setDefaultsSystem()
 		self.__platform = "macos" if platform.system().lower() == "darwin" else platform.system().lower()
+		self.__setDefaultsSystem()
 
+		if self.__platform != "windows" :
+			import pwd
+			from pwd import getpwnam
+			import xattr
+
+			if os.getenv("SUDO_USER") :
+				self.originalUser = getpwnam(os.getenv("SUDO_USER"))
+			else :
+				self.originalUser = pwd.getpwuid(os.getuid())
+
+			#Set sudo	
+			euid = os.geteuid()
+			if euid != 0:
+			    args = ['sudo', sys.executable] + sys.argv + [os.environ]
+			    os.execlpe('sudo', *args)
+			
 		if not os.path.isfile(self.confFile) :	
    			print "Configuration file doesn't exists, create now."
    			self.createConfiguration()
@@ -116,6 +118,11 @@ This application facilitates the creation of hosts through a few simple steps.
 
 		self.envir = self.conf[self.__platform]
 		self.envir['pathseparator'] = "/" if self.__platform != "windows" else "\\"
+
+		#if self.__platform == "windows" :
+			#if not os.access(self.envir["hosts"], os.W_OK) :
+				#print "Among the session with permissions to write files in %s" % self.envir["hosts"]
+				#os._exit(1)
 
 		self.initMarkupVhosts = '<VirtualHost *:80>'
 		self.endMarkupVhosts = '</VirtualHost>'	
@@ -231,10 +238,6 @@ This application facilitates the creation of hosts through a few simple steps.
 
 		hostsConfig = '''\n{0}\t{1}\n{0}\t{2}''' . format(self.envir["ipdomain"], self.domain, alias)
 
-		#if not os.access(self.envir["vhosts"], os.W_OK) and not os.access(self.envir["hosts"], os.W_OK) :
-			#print "Among the session with permissions to write files in %s and %s" % (self.envir["vhosts"], self.envir["hosts"])
-			#os._exit(1)
-
 		hostsFile = open(self.envir["hosts"], "a")
 		hostsFile.write(hostsConfig)
 		hostsFile.close()	
@@ -306,13 +309,15 @@ This application facilitates the creation of hosts through a few simple steps.
 		temp = []
 		tempHost = []
 		originalHost = open(file, 'r')
-		xattrHost = xattr.xattr(file)
 
 		os.chmod(abs_path, 0644)
-		os.chown(abs_path, self.originalUser[2], self.originalUser[3])
 
-		for name in xattrHost : 
-			xattr.setxattr(abs_path, name, xattrHost.get(name))
+		if self.__platform != "windows" :
+			xattrHost = xattr.xattr(file)
+			os.chown(abs_path, self.originalUser[2], self.originalUser[3])
+
+			for name in xattrHost : 
+				xattr.setxattr(abs_path, name, xattrHost.get(name))
 
 		for line in originalHost:
 
@@ -494,27 +499,31 @@ $HTDOCS - {5}
 		return self.defaultssystem[system];		
 			
 	def __setDefaultsSystem(self) :
-		self.defaultssystem["windows"]["defaulthome"] = r"C:\Users\{0}" . format(self.__getUsername()) 
+		pathUser = os.path.expanduser("~") 
+		self.defaultssystem["windows"]["defaulthome"] = pathUser
 		self.defaultssystem["windows"]["defaulthosts"] =  r"C:\Windows\system32\drivers\etc\hosts"
 		self.defaultssystem["windows"]["defaultvhosts"] = r"C:\xampp\apache\conf\extra\httpd-vhosts.conf"
 		self.defaultssystem["windows"]["defaultapacherestart"] = r"C:\xampp\apache\bin>httpd.exe -k restart"
 		self.defaultssystem["windows"]["defaulthtdocs"] = r"C:\xampp\htdocs"
 
-		self.defaultssystem["linux"]["defaulthome"] = r"/home/{0}" . format(self.__getUsername())
+		self.defaultssystem["linux"]["defaulthome"] = pathUser
 		self.defaultssystem["linux"]["defaulthosts"] =  r"/etc/hosts"
 		self.defaultssystem["linux"]["defaultvhosts"] = r"opt/lampp/etc/extra/httpd-vhosts.conf"
 		self.defaultssystem["linux"]["defaultapacherestart"] = r"sh /opt/lampp/lampp restart"
 		self.defaultssystem["linux"]["defaulthtdocs"] = r"/opt/lampp/htdocs"
 
-		self.defaultssystem["macos"]["defaulthome"] = r"/Users/{0}" . format(self.__getUsername())
+		self.defaultssystem["macos"]["defaulthome"] = pathUser
 		self.defaultssystem["macos"]["defaulthosts"] =  r"/etc/hosts"
 		self.defaultssystem["macos"]["defaultvhosts"] = r"/Applications/XAMPP/xamppfiles/etc/extra/httpd-vhosts.conf"
 		self.defaultssystem["macos"]["defaultapacherestart"] = r"sh /Applications/XAMPP/xamppfiles/xampp reloadapache"
 		self.defaultssystem["macos"]["defaulthtdocs"] = r"/Applications/XAMPP/xamppfiles/htdocs"
 
 	def __getUsername(self) :
-
-		return os.getenv("SUDO_USER") or pwd.getpwuid(os.getuid())[0]
+		if self.__platform != "windows" :
+			return os.getenv("SUDO_USER") or pwd.getpwuid(os.getuid())[0] 
+		else :	
+			import getpass
+			return getpass.getuser()
     			
 #Start
 def main():
