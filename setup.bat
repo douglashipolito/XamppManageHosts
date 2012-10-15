@@ -1,0 +1,1 @@
+python setup_windows.py py2exe

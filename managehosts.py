@@ -25,16 +25,18 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 """
 
 import sys                
-import os.path
+import os
 import string
-from tempfile import mkstemp
-from shutil import move
-from os import remove, close
 import shutil
 import re
 import getopt
 from string import Template
 import platform
+import inspect
+
+if platform.system().lower() != "windows" :
+	import pwd
+	from pwd import getpwnam
 
 class ManageHosts :
 	"""###Manage Hosts####
@@ -64,15 +66,18 @@ This application facilitates the creation of hosts through a few simple steps.
 	endMarkupVhosts = ""
 	originalUser = {}
 
+	currentPathScript = ""
+
+	asRoot = False
+
 	def __init__(self) :
 		self.__platform = "macos" if platform.system().lower() == "darwin" else platform.system().lower()
 		self.__setDefaultsSystem()
+		self.currentPathScript = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
+
+		self.confFile = self.currentPathScript + os.sep + self.confFile
 
 		if self.__platform != "windows" :
-			import pwd
-			from pwd import getpwnam
-			import xattr
-
 			if os.getenv("SUDO_USER") :
 				self.originalUser = getpwnam(os.getenv("SUDO_USER"))
 			else :
@@ -82,48 +87,38 @@ This application facilitates the creation of hosts through a few simple steps.
 			euid = os.geteuid()
 			if euid != 0:
 			    args = ['sudo', sys.executable] + sys.argv + [os.environ]
+			    print "* You must be root to change the hosts file, enter the password of root if prompted\n"		
 			    os.execlpe('sudo', *args)
-			
+
 		if not os.path.isfile(self.confFile) :	
    			print "Configuration file doesn't exists, create now."
    			self.createConfiguration()
 
+   		#Start configs	
 		confs = open(self.confFile, 'r')
-		dictConfig = {}
-		configForSystem = False
-		prevSystem = ""
+		dictConfig = { 'windows' : {}, 'macos' : {}, 'linux' : {} }
 		for conf in confs : 
 			if ("conf") in conf :
 				m = re.match('conf\.([a-z]+)\.([a-z]+) ?= ?"(.*)"', conf.strip())
-				
-				if m.group(1) != prevSystem and prevSystem :
-					dictConfig = {}
-
-				if not dictConfig :	
-					dictConfig[m.group(1)] = {}
-
 				dictConfig[m.group(1)][m.group(2)] = m.group(3)
 				
-				if m.group(1) == self.__platform : 
-					configForSystem = True
-
-				prevSystem = m.group(1)
-
-		self.conf.update(dictConfig)		
 		confs.close()
 
-		if not configForSystem :
+		#Update configs
+		self.conf.update(dictConfig)
+		
+		#Set environment
+		self.envir = self.conf[self.__platform]
+
+		#Verify if exists configs for this OS
+		if not self.envir:
 			print "You don't have a configuration for your system! Add to file configuration."
 			exit(1)
 
-		self.envir = self.conf[self.__platform]
-		self.envir['pathseparator'] = "/" if self.__platform != "windows" else "\\"
+		#Set Separator for system	
+		self.envir['pathseparator'] = os.sep
 
-		#if self.__platform == "windows" :
-			#if not os.access(self.envir["hosts"], os.W_OK) :
-				#print "Among the session with permissions to write files in %s" % self.envir["hosts"]
-				#os._exit(1)
-
+		#Makups for virtualhost
 		self.initMarkupVhosts = '<VirtualHost *:80>'
 		self.endMarkupVhosts = '</VirtualHost>'	
 		
@@ -173,13 +168,15 @@ This application facilitates the creation of hosts through a few simple steps.
 						self.__VerifyRequestExit(self.domain)	
 		else :
 			self.domain = args or raw_input("Domain: ")
-			self.pathDomain = self.envir["basepathdomain"] + self.envir['pathseparator'] + self.domain
+			self.pathDomain = self.envir["basepathdomain"] + '/' + self.domain
 
 			vHostsFileExists = open(self.envir["vhosts"], 'r')
 			
 			for vhost in vHostsFileExists :
 				if 'ServerName {0}' . format(self.domain) in vhost :
 					print "Domain already created!"
+					raw_input("Press any key to quit..")
+					vHostsFileExists.close()
 					exit(1)
 
 			vHostsFileExists.close()		
@@ -202,7 +199,7 @@ This application facilitates the creation of hosts through a few simple steps.
 			return False
 
 		for i, domainOption in enumerate(domains):
-			print "[{0}] - {1}" . format(i, domainOption)
+			print " [{0}] - {1} \n" . format(i, domainOption)
 
 		return domains	
 		
@@ -211,7 +208,10 @@ This application facilitates the creation of hosts through a few simple steps.
 			createDir = raw_input("Dir ('" + self.pathDomain + "') doesn't exists.. create now (Y/n) ? : ").lower()
 			if createDir == "y" or createDir == "" : 
 				os.makedirs(self.pathDomain, 0755)
-				os.chown(self.pathDomain, self.originalUser[2], self.originalUser[3])
+				
+				if self.__platform != "windows" :
+					os.chown(self.pathDomain, self.originalUser[2], self.originalUser[3])
+				
 			elif createDir == "n" : 
 				print "please, create dir later!"		
 
@@ -245,6 +245,8 @@ This application facilitates the creation of hosts through a few simple steps.
 		self.reloadApache()
 
 		print "Done!"
+		raw_input("Press any key to quit..")
+		exit(1)
 
 	def remove(self) :
 		virtualHost = self.__removeVHosts(self.envir["vhosts"])
@@ -274,6 +276,8 @@ This application facilitates the creation of hosts through a few simple steps.
 		
 		self.reloadApache()
 		print "Done!"
+		raw_input("Press any key to quit..")
+		exit(1)
 
 	def listHosts(self) :
 		hosts = []
@@ -303,23 +307,11 @@ This application facilitates the creation of hosts through a few simple steps.
 
 		documentRoot = ""
 
-		#Create temp file
-		fh, abs_path = mkstemp()
-		newHost = open(abs_path,'w')
 		temp = []
 		tempHost = []
+
 		originalHost = open(file, 'r')
-
-		os.chmod(abs_path, 0644)
-
-		if self.__platform != "windows" :
-			xattrHost = xattr.xattr(file)
-			os.chown(abs_path, self.originalUser[2], self.originalUser[3])
-
-			for name in xattrHost : 
-				xattr.setxattr(abs_path, name, xattrHost.get(name))
-
-		for line in originalHost:
+		for line in originalHost :
 
 			if self.initMarkupVhosts in line  :
 				foundMarkup = True
@@ -347,34 +339,25 @@ This application facilitates the creation of hosts through a few simple steps.
 					del temp[-1]
 				tempHost = []	
 				foundMarkup = False
-				foundDomain = False		
-		else :
-			newHost.write(''.join(temp))				
-
-		#close temp file
-		newHost.close()
+				foundDomain = False	
+		
 		originalHost.close()
-		close(fh)
 
-		#Remove original file
-		remove(file)
+		if temp :
+			originalHost = open(file, 'w+')
+			originalHost.write('' . join(temp))		
+			originalHost.close()
 
-		#Move new file
-		move(abs_path, file)
-
-		#Remove dir
-		self.__removeDir()
+			#Remove dir
+			self.__removeDir()
 
 		return _found
 
 	def __removeHosts(self, file):
 		foundDomain = False
 		temp = []
+		tempHost = []
 
-		#Create temp file
-		fh, abs_path = mkstemp()
-
-		newHost = open(abs_path,'w')
 		originalHost = open(file, 'r')
 
 		for line in originalHost :
@@ -383,21 +366,15 @@ This application facilitates the creation of hosts through a few simple steps.
 			else :
 				foundDomain = True	
 		else :
-			if "\n" in temp[-1] : 
+			if "\n" == temp[-1] : 
 				del temp[-1]
-			newHost.write(''.join(temp))		
-		#close temp file
-		newHost.close()
+		
 		originalHost.close()
-		close(fh)
 
-		#Remove original file
-		remove(file)
-
-		#Move new file
-		move(abs_path, file)
-
-		os.chmod(file, 0644)
+		if temp :
+			originalHost = open(file, 'w+')
+			originalHost.write('' . join(temp))		
+			originalHost.close()
 
 		return foundDomain		
 
@@ -405,7 +382,7 @@ This application facilitates the creation of hosts through a few simple steps.
 		if os.path.exists(self.pathDomain) : 
 			if raw_input("Remove path domain and all files from ('" + self.pathDomain + "') (y/n) ? : ").lower() == "y" : 
 				shutil.rmtree(self.pathDomain)
-				print "Dir {0} and files successfully removed!" . format(self.pathDomain)    
+				print "Dir {0} and files successfully removed!" . format(self.pathDomain)
 
 	def __VerifyRequestExit(self, option, msg="") :
 		if option.lower() == "!q" :
@@ -457,6 +434,7 @@ This application facilitates the creation of hosts through a few simple steps.
 					print "You have not set any environment!"
 					confs.close()
 					remove(self.confFile)
+					raw_input("Press any key to quit..")
 					exit(1)		
 
 			if environment in acceptedEnvironments:
@@ -499,20 +477,19 @@ $HTDOCS - {5}
 		return self.defaultssystem[system];		
 			
 	def __setDefaultsSystem(self) :
-		pathUser = os.path.expanduser("~") 
-		self.defaultssystem["windows"]["defaulthome"] = pathUser
+		self.defaultssystem["windows"]["defaulthome"] = r"C:\Users\{0}" . format(self.__getUsername()) 
 		self.defaultssystem["windows"]["defaulthosts"] =  r"C:\Windows\system32\drivers\etc\hosts"
 		self.defaultssystem["windows"]["defaultvhosts"] = r"C:\xampp\apache\conf\extra\httpd-vhosts.conf"
-		self.defaultssystem["windows"]["defaultapacherestart"] = r"C:\xampp\apache\bin>httpd.exe -k restart"
-		self.defaultssystem["windows"]["defaulthtdocs"] = r"C:\xampp\htdocs"
+		self.defaultssystem["windows"]["defaultapacherestart"] = r'C:\xampp\apache\bin\httpd.exe -k restart'
+		self.defaultssystem["windows"]["defaulthtdocs"] = r"C:/xampp/htdocs"
 
-		self.defaultssystem["linux"]["defaulthome"] = pathUser
+		self.defaultssystem["linux"]["defaulthome"] = r"/home/{0}" . format(self.__getUsername())
 		self.defaultssystem["linux"]["defaulthosts"] =  r"/etc/hosts"
 		self.defaultssystem["linux"]["defaultvhosts"] = r"opt/lampp/etc/extra/httpd-vhosts.conf"
 		self.defaultssystem["linux"]["defaultapacherestart"] = r"sh /opt/lampp/lampp restart"
 		self.defaultssystem["linux"]["defaulthtdocs"] = r"/opt/lampp/htdocs"
 
-		self.defaultssystem["macos"]["defaulthome"] = pathUser
+		self.defaultssystem["macos"]["defaulthome"] = r"/Users/{0}" . format(self.__getUsername())
 		self.defaultssystem["macos"]["defaulthosts"] =  r"/etc/hosts"
 		self.defaultssystem["macos"]["defaultvhosts"] = r"/Applications/XAMPP/xamppfiles/etc/extra/httpd-vhosts.conf"
 		self.defaultssystem["macos"]["defaultapacherestart"] = r"sh /Applications/XAMPP/xamppfiles/xampp reloadapache"
